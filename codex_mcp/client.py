@@ -154,6 +154,7 @@ class CodexMCPClient:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
     async def send_request(self, method: str, params: JSONValue | None = None) -> Any:
         """Send a JSON-RPC request and await its response."""
 

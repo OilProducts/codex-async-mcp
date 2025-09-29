@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
-from typing import Any, Mapping
+from typing import Any, Mapping, Annotated
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 from .client import CodexMCPClient
 from .jobs import JobRegistry, JobState
@@ -18,6 +20,98 @@ _LOGGER = logging.getLogger(__name__)
 registry = JobRegistry()
 _client: CodexMCPClient | None = None
 _background_tasks: set[asyncio.Task[Any]] = set()
+_EVENT_TRUNCATION = 1024
+
+
+class NotificationHub:
+    """Store job status notifications and support cursor-based consumption."""
+
+    def __init__(self) -> None:
+        self._items: list[dict[str, Any]] = []
+        self._cond = asyncio.Condition()
+
+    async def publish(self, payload: dict[str, Any]) -> int:
+        async with self._cond:
+            self._items.append(payload)
+            self._cond.notify_all()
+            return len(self._items)
+
+    async def fetch(self, cursor: int | None = None) -> tuple[list[dict[str, Any]], int]:
+        start = 0 if cursor is None else max(int(cursor), 0)
+        async with self._cond:
+            slice_items = self._items[start:]
+            return list(slice_items), len(self._items)
+
+    async def wait(self, cursor: int | None = None) -> tuple[list[dict[str, Any]], int]:
+        start = 0 if cursor is None else max(int(cursor), 0)
+        async with self._cond:
+            while start >= len(self._items):
+                await self._cond.wait()
+            slice_items = self._items[start:]
+            return list(slice_items), len(self._items)
+
+
+notifications = NotificationHub()
+
+
+async def _broadcast_notification(method: str, payload: Mapping[str, Any]) -> None:
+    notifier = getattr(mcp, "notify", None)
+    fallback = getattr(mcp, "notify_all", None)
+    target = notifier if callable(notifier) else fallback if callable(fallback) else None
+    if target is None:
+        _LOGGER.debug("FastMCP notify method unavailable; skipping broadcast for %s", method)
+        return
+
+    try:
+        result = target(method, payload)
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        _LOGGER.debug("Failed to broadcast notification %s: %s", method, exc)
+
+
+async def _publish_job_update(job_id: str) -> None:
+    snapshot = await registry.get_snapshot(job_id)
+    if snapshot is None:
+        return
+
+    payload: dict[str, Any] = {
+        "job_id": snapshot.job_id,
+        "status": snapshot.status.value,
+        "result": snapshot.result,
+        "error": snapshot.error,
+        "conversation_id": snapshot.session_id,
+        "published_at": time.time(),
+        "source": "job",
+    }
+
+    cursor = await notifications.publish(payload)
+    payload_with_cursor = dict(payload, cursor=cursor)
+    await _broadcast_notification("codex_async/job_update", payload_with_cursor)
+
+
+def _truncate_value(value: Any, limit: int) -> Any:
+    if limit <= 0:
+        return value
+    if isinstance(value, str) and len(value) > limit:
+        extra = len(value) - limit
+        return f"{value[:limit]}... ({extra} more chars truncated)"
+    if isinstance(value, list):
+        return [_truncate_value(item, limit) for item in value]
+    if isinstance(value, tuple):  # pragma: no cover - not expected but safe
+        return tuple(_truncate_value(item, limit) for item in value)
+    if isinstance(value, dict):
+        return {key: _truncate_value(item, limit) for key, item in value.items()}
+    return value
+
+
+def _summarise_events(events: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
+    if limit is None or limit <= 0:
+        return [dict(event) for event in events]
+    summarised: list[dict[str, Any]] = []
+    for event in events:
+        summarised.append(_truncate_value(event, limit))
+    return summarised
 
 
 def _track(task: asyncio.Task[Any]) -> None:
@@ -61,6 +155,7 @@ async def _pump_events(state: JobState) -> None:
     except Exception as exc:  # pragma: no cover - log and mark failure
         _LOGGER.exception("Event pump for %s failed: %s", job_id, exc)
         await registry.fail_job(job_id, f"event stream error: {exc}")
+        await _publish_job_update(job_id)
 
 
 async def _watch_future(job_id: str, fut: asyncio.Future[Any]) -> None:
@@ -71,8 +166,10 @@ async def _watch_future(job_id: str, fut: asyncio.Future[Any]) -> None:
     except Exception as exc:  # pragma: no cover - propagate as failure
         _LOGGER.exception("Codex job %s raised: %s", job_id, exc)
         await registry.fail_job(job_id, str(exc))
+        await _publish_job_update(job_id)
     else:
         await registry.finish_job(job_id, result)
+        await _publish_job_update(job_id)
 
 
 def _job_payload(state: JobState, cursor: int, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -110,19 +207,23 @@ async def _lifespan(_app: FastMCP):
 mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
 
 
-@mcp.tool(name="codex_async_start", description="Start an asynchronous Codex job")
+@mcp.tool(
+    name="codex_async_start",
+    description="Launch a detached Codex job; use returned job_id and cursor for follow-ups",
+)
 async def start(
-    prompt: str,
-    model: str | None = None,
-    profile: str | None = None,
-    cwd: str | None = None,
-    approval_policy: str | None = None,
-    sandbox: str | None = None,
-    config: Mapping[str, Any] | None = None,
-    base_instructions: str | None = None,
-    include_plan_tool: bool | None = None,
-    extra_arguments: Mapping[str, Any] | None = None,
+    prompt: Annotated[str, Field(description="Natural language directive for the Codex job")],
+    model: Annotated[str | None, Field(description="Optional Codex model override")] = None,
+    profile: Annotated[str | None, Field(description="Codex profile name to apply")] = None,
+    cwd: Annotated[str | None, Field(description="Working directory path for the Codex subprocess")] = None,
+    approval_policy: Annotated[str | None, Field(description="Codex approval policy (e.g. untrusted)")] = None,
+    sandbox: Annotated[str | None, Field(description="Codex sandbox setting (read-only/workspace-write/etc.)")] = None,
+    config: Annotated[Mapping[str, Any] | None, Field(description="Additional Codex CLI config overrides")] = None,
+    base_instructions: Annotated[str | None, Field(description="Extra system instructions merged into the Codex session")] = None,
+    include_plan_tool: Annotated[bool | None, Field(description="Whether Codex should enable its planning tool")] = None,
+    extra_arguments: Annotated[Mapping[str, Any] | None, Field(description="Provider-specific Codex arguments")] = None,
 ) -> dict[str, Any]:
+    """Launch a detached Codex session and return its initial state."""
     client = _require_client()
     session = await client.start_detached_codex(
         prompt,
@@ -150,17 +251,48 @@ async def start(
     return _job_payload(snapshot, snapshot.next_cursor, events=[])
 
 
-@mcp.tool(name="codex_async_events", description="Fetch buffered Codex MCP events for a job")
-async def fetch_events(job_id: str, cursor: int | None = None) -> dict[str, Any]:
-    events, next_cursor = await registry.get_events(job_id, cursor)
+@mcp.tool(
+    name="codex_async_events",
+    description="Return events after the provided cursor (pass the last cursor to avoid repeats)",
+)
+async def fetch_events(
+    job_id: Annotated[str, Field(description="Target job identifier returned by codex_async_start")],
+    cursor: Annotated[int | None, Field(description="Number of events already consumed; use 0 or omit for first call")] = None,
+    limit: Annotated[int | None, Field(gt=0, description="Maximum events to return in this page")] = 20,
+    event_types: Annotated[list[str] | None, Field(description="Optional whitelist of Codex event types to include")] = None,
+    truncate: Annotated[int | None, Field(gt=0, description="Maximum characters per string field before truncation")] = _EVENT_TRUNCATION,
+) -> dict[str, Any]:
+    """Return Codex events after *cursor*, honoring optional limits and filters."""
+    if limit is not None and limit <= 0:
+        raise ValueError("limit must be positive when provided")
+    events, next_cursor = await registry.get_events(
+        job_id,
+        cursor,
+        limit=limit,
+        event_types=event_types,
+    )
+    truncated = _summarise_events(events, truncate)
     snapshot = await registry.get_snapshot(job_id)
     if snapshot is None:
         raise ValueError(f"unknown job_id {job_id}")
-    return _job_payload(snapshot, next_cursor, events=events)
+    payload = _job_payload(snapshot, next_cursor, events=truncated)
+    payload["returned"] = len(truncated)
+    payload["requested_limit"] = limit
+    payload["filter_types"] = event_types
+    if truncate is not None and truncate > 0:
+        payload["truncate"] = truncate
+    return payload
 
 
-@mcp.tool(name="codex_async_reply", description="Send a follow-up prompt to an existing Codex job")
-async def reply(job_id: str, prompt: str) -> dict[str, Any]:
+@mcp.tool(
+    name="codex_async_reply",
+    description="Send a follow-up prompt for job_id; cursor in reply response advances the stream",
+)
+async def reply(
+    job_id: Annotated[str, Field(description="Existing job identifier to continue")],
+    prompt: Annotated[str, Field(description="Follow-up message to send to the Codex session")],
+) -> dict[str, Any]:
+    """Send a follow-up prompt to an existing job and refresh its snapshot."""
     client = _require_client()
     state = await registry.get_state(job_id)
     if state is None:
@@ -179,6 +311,30 @@ async def reply(job_id: str, prompt: str) -> dict[str, Any]:
     if snapshot is None:
         raise RuntimeError("failed to refresh job state")
     return _job_payload(snapshot, snapshot.next_cursor)
+
+
+@mcp.tool(
+    name="codex_async_notifications",
+    description="Fetch completion notices after the cursor; supply the returned cursor next call",
+)
+async def fetch_notifications(
+    cursor: Annotated[int | None, Field(description="Notification index already processed; omit or use 0 initially")] = None,
+) -> dict[str, Any]:
+    """Fetch completion notifications that occur after *cursor*."""
+    items, next_cursor = await notifications.fetch(cursor)
+    return {"notifications": items, "cursor": next_cursor}
+
+
+@mcp.tool(
+    name="codex_async_wait",
+    description="Block until notifications beyond cursor arrive; first call omit cursor or set it to 0",
+)
+async def wait_notifications(
+    cursor: Annotated[int | None, Field(description="Notification index already processed; omit or use 0 initially")] = None,
+) -> dict[str, Any]:
+    """Block until a notification beyond *cursor* arrives, then return it."""
+    items, next_cursor = await notifications.wait(cursor)
+    return {"notifications": items, "cursor": next_cursor}
 
 
 def main() -> None:
