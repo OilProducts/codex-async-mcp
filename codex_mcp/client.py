@@ -253,6 +253,17 @@ class CodexMCPClient:
             },
         }
         request_id, result_future, message = self._prepare_request("tools/call", args)
+
+        waiter = _DetachedWaiter(
+            queue=session.events,
+            session_id=self._loop.create_future(),
+            result=result_future,
+        )
+        waiter.session_id.set_result(session.conversation_id)
+        key = str(request_id)
+        self._detached_waiters[key] = waiter
+        result_future.add_done_callback(lambda fut, rid=key: self._on_request_done(rid, fut))
+
         await self._write(message)
         return result_future
 
@@ -409,8 +420,7 @@ class CodexMCPClient:
         if isinstance(msg, dict):
             event_type = msg.get("type")
             if event_type == "session_configured" and not waiter.session_id.done():
-                session_cfg = msg.get("session_configured", {})
-                conversation_id = session_cfg.get("session_id")
+                conversation_id = msg.get("session_id")
                 if isinstance(conversation_id, str) and conversation_id:
                     waiter.session_id.set_result(conversation_id)
                 elif not waiter.session_id.done():
