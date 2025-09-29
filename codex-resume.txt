@@ -1,8 +1,11 @@
 Codex MCP async wrapper progress (incomplete)
 
 Original request:
-- Build an MCP server that exposes the synchronous `codex mcp serve` process as an asynchronous service using the FastMCP library.
-- Support job correlation via IDs so clients can poll for completion and stream Codex events without blocking.
+- Wrap the serial `codex mcp serve` CLI so Codex jobs can run asynchronously and multiple requests can be in flight, instead of blocking on the built-in stdio loop.
+- Stand up our own MCP server (preferably with FastMCP) that proxies calls to the upstream Codex server and surfaces an async interface tailored for agents.
+- Reuse the “unique job identifier” concept introduced during earlier experiments so downstream clients can correlate follow-up calls with the initial job; verify whether Codex events alone are sufficient or if additional metadata is required.
+- Ensure the design works smoothly with the default event stream Codex emits (session configuration, reasoning deltas, task completion) and supports polling semantics an external agent can rely on.
+- Feel free to consult the FastMCP documentation (https://gofastmcp.com/llms.txt and linked docs) to align with best practices while building the wrapper.
 
 Session summary:
 - Reviewed the captured Codex session log to understand event shapes and confirm `requestId` correlation semantics.
