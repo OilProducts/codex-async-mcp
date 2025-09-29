@@ -28,27 +28,61 @@ class NotificationHub:
 
     def __init__(self) -> None:
         self._items: list[dict[str, Any]] = []
+        self._offset: int = 0
         self._cond = asyncio.Condition()
 
     async def publish(self, payload: dict[str, Any]) -> int:
         async with self._cond:
             self._items.append(payload)
             self._cond.notify_all()
-            return len(self._items)
+            return self._offset + len(self._items)
 
     async def fetch(self, cursor: int | None = None) -> tuple[list[dict[str, Any]], int]:
-        start = 0 if cursor is None else max(int(cursor), 0)
         async with self._cond:
-            slice_items = self._items[start:]
-            return list(slice_items), len(self._items)
+            end = self._offset + len(self._items)
+            absolute_cursor = self._normalize_cursor(cursor, end)
+            idx = absolute_cursor - self._offset
+            slice_items = self._items[idx:]
+            next_cursor = self._offset + len(self._items)
+            self._prune(absolute_cursor)
+            return list(slice_items), next_cursor
 
     async def wait(self, cursor: int | None = None) -> tuple[list[dict[str, Any]], int]:
-        start = 0 if cursor is None else max(int(cursor), 0)
         async with self._cond:
-            while start >= len(self._items):
+            while True:
+                end = self._offset + len(self._items)
+                absolute_cursor = self._normalize_cursor(cursor, end)
+                if end > absolute_cursor:
+                    break
                 await self._cond.wait()
-            slice_items = self._items[start:]
-            return list(slice_items), len(self._items)
+                cursor = absolute_cursor
+            idx = absolute_cursor - self._offset
+            slice_items = self._items[idx:]
+            next_cursor = self._offset + len(self._items)
+            self._prune(absolute_cursor)
+            return list(slice_items), next_cursor
+
+    def _normalize_cursor(self, cursor: int | None, upper_bound: int) -> int:
+        if cursor is None:
+            return self._offset
+        try:
+            value = int(cursor)
+        except (TypeError, ValueError):
+            return self._offset
+        if value < self._offset:
+            return self._offset
+        if value > upper_bound:
+            return upper_bound
+        return value
+
+    def _prune(self, cutoff: int) -> None:
+        if cutoff <= self._offset:
+            return
+        drop = min(cutoff - self._offset, len(self._items))
+        if drop <= 0:
+            return
+        del self._items[:drop]
+        self._offset += drop
 
 
 notifications = NotificationHub()
