@@ -1,0 +1,15 @@
+Codex MCP async wrapper progress (incomplete)
+
+Overview:
+- Implemented an asynchronous FastMCP server (`codex_mcp/server.py`) that proxies `codex mcp serve` via the existing `CodexMCPClient`. The server exposes tools `codex_async.start`, `codex_async.events`, and `codex_async.reply`, enabling cursor-based polling and follow-up prompts.
+- Added a job registry (`codex_mcp/jobs.py`) to track detached Codex sessions, buffer event streams, and manage job lifecycle state for polling.
+- Updated the client (`codex_mcp/client.py`) to capture conversation IDs correctly and to share queues across follow-up requests so event streams stay intact.
+- Wired up packaging: declared the FastMCP dependency, created the `codex-mcp-async` console script, and documented usage plus cursor semantics in the README.
+- Fixed the FastMCP lifespan wiring so the server boots successfully after pipx installation.
+
+Open items / next steps:
+- Install dependencies and run live smoke tests to verify `codex_async.start` / `events` / `reply` end-to-end against a real Codex session.
+- Backfill automated coverage for the job registry and event cursor logic.
+- Decide on retention/cleanup strategy for completed jobs before productionising.
+
+Current status: Ready for manual testing; no automated tests added yet.

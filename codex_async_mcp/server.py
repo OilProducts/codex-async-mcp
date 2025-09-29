@@ -510,4 +510,3 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-__all__ = ["mcp", "registry", "main", "enable_debug_logging"]
