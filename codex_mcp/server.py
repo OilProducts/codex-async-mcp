@@ -110,7 +110,7 @@ async def _lifespan(_app: FastMCP):
 mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
 
 
-@mcp.tool(name="codex_async.start", description="Start an asynchronous Codex job")
+@mcp.tool(name="codex_async_start", description="Start an asynchronous Codex job")
 async def start(
     prompt: str,
     model: str | None = None,
@@ -150,7 +150,7 @@ async def start(
     return _job_payload(snapshot, snapshot.next_cursor, events=[])
 
 
-@mcp.tool(name="codex_async.events", description="Fetch buffered Codex MCP events for a job")
+@mcp.tool(name="codex_async_events", description="Fetch buffered Codex MCP events for a job")
 async def fetch_events(job_id: str, cursor: int | None = None) -> dict[str, Any]:
     events, next_cursor = await registry.get_events(job_id, cursor)
     snapshot = await registry.get_snapshot(job_id)
@@ -159,7 +159,7 @@ async def fetch_events(job_id: str, cursor: int | None = None) -> dict[str, Any]
     return _job_payload(snapshot, next_cursor, events=events)
 
 
-@mcp.tool(name="codex_async.reply", description="Send a follow-up prompt to an existing Codex job")
+@mcp.tool(name="codex_async_reply", description="Send a follow-up prompt to an existing Codex job")
 async def reply(job_id: str, prompt: str) -> dict[str, Any]:
     client = _require_client()
     state = await registry.get_state(job_id)
