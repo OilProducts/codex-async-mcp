@@ -12,7 +12,7 @@ Session summary:
 - Designed the async wrapper architecture (Codex client subprocess, job registry, FastMCP façade) and aligned terminology around a cursor for event polling.
 - Implemented the job registry (`codex_mcp/jobs.py`) to buffer events, track job status/result/error, and expose cursor-based retrieval.
 - Extended `CodexMCPClient` so follow-up prompts reuse the original event queue and so conversation IDs are picked up from `session_configured` events.
-- Added the FastMCP server (`codex_mcp/server.py`) with `codex_async.start`, `codex_async.events`, and `codex_async.reply`, plus background tasks that watch Codex futures and pump events into the registry.
+- Added the FastMCP server (`codex_mcp/server.py`) with `codex_async_start`, `codex_async_events`, and `codex_async_reply`, plus background tasks that watch Codex futures and pump events into the registry.
 - Updated packaging (`pyproject.toml`) and docs (`README.md`) and introduced the `codex-mcp-async` console entry point.
 - Diagnosed and fixed a FastMCP lifespan wiring bug encountered after `pipx install .` (the lifespan hook must be passed as a callable, not a pre-instantiated context manager).
 - Committed the implementation along with the recorded MCP log and pushed to `main`.
@@ -24,13 +24,13 @@ Implementation overview:
 - Packaging now depends on `fastmcp>=2.0.0` and publishes the `codex-mcp-async` CLI; README documents usage and cursor semantics.
 
 Open items / next steps:
-- Reinstall in the pipx environment (`pipx install --force .`) and smoke-test `codex_async.start` / `events` / `reply` end-to-end against the real Codex server.
+- Reinstall in the pipx environment (`pipx install --force .`) and smoke-test `codex_async_start` / `codex_async_events` / `codex_async_reply` end-to-end against the real Codex server.
 - Backfill automated coverage, especially around job registry cursor behaviour and error paths.
 - Decide on retention/cleanup strategy for completed/failed jobs before production use.
 
 Instructions for the next agent:
 - Run `pipx install --force .` (or equivalent) to pick up the latest changes, then execute `codex-mcp-async` and confirm the FastMCP server starts cleanly.
-- Perform a manual end-to-end test: start a job, poll events using the returned cursor, and exercise `codex_async.reply` to ensure event buffering works across turns.
+- Perform a manual end-to-end test: start a job, poll events using the returned cursor, and exercise `codex_async_reply` to ensure event buffering works across turns.
 - Capture observations or issues in this file and open follow-up tasks if failures appear; do not alter the job registry design until after testing results are collected.
 
 Current status: Ready for manual testing; no automated tests added yet.
