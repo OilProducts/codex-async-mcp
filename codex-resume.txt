@@ -1,15 +1,33 @@
 Codex MCP async wrapper progress (incomplete)
 
-Overview:
-- Implemented an asynchronous FastMCP server (`codex_mcp/server.py`) that proxies `codex mcp serve` via the existing `CodexMCPClient`. The server exposes tools `codex_async.start`, `codex_async.events`, and `codex_async.reply`, enabling cursor-based polling and follow-up prompts.
-- Added a job registry (`codex_mcp/jobs.py`) to track detached Codex sessions, buffer event streams, and manage job lifecycle state for polling.
-- Updated the client (`codex_mcp/client.py`) to capture conversation IDs correctly and to share queues across follow-up requests so event streams stay intact.
-- Wired up packaging: declared the FastMCP dependency, created the `codex-mcp-async` console script, and documented usage plus cursor semantics in the README.
-- Fixed the FastMCP lifespan wiring so the server boots successfully after pipx installation.
+Original request:
+- Build an MCP server that exposes the synchronous `codex mcp serve` process as an asynchronous service using the FastMCP library.
+- Support job correlation via IDs so clients can poll for completion and stream Codex events without blocking.
+
+Session summary:
+- Reviewed the captured Codex session log to understand event shapes and confirm `requestId` correlation semantics.
+- Designed the async wrapper architecture (Codex client subprocess, job registry, FastMCP façade) and aligned terminology around a cursor for event polling.
+- Implemented the job registry (`codex_mcp/jobs.py`) to buffer events, track job status/result/error, and expose cursor-based retrieval.
+- Extended `CodexMCPClient` so follow-up prompts reuse the original event queue and so conversation IDs are picked up from `session_configured` events.
+- Added the FastMCP server (`codex_mcp/server.py`) with `codex_async.start`, `codex_async.events`, and `codex_async.reply`, plus background tasks that watch Codex futures and pump events into the registry.
+- Updated packaging (`pyproject.toml`) and docs (`README.md`) and introduced the `codex-mcp-async` console entry point.
+- Diagnosed and fixed a FastMCP lifespan wiring bug encountered after `pipx install .` (the lifespan hook must be passed as a callable, not a pre-instantiated context manager).
+- Committed the implementation along with the recorded MCP log and pushed to `main`.
+
+Implementation overview:
+- Asynchronous FastMCP server proxies `codex mcp serve` via `CodexMCPClient` and exposes async tools for start/poll/reply.
+- Job registry buffers MCP `codex/event` notifications and surfaces cursor-based polling semantics.
+- Client fixes ensure conversation IDs resolve reliably and that follow-up prompts share the event queue.
+- Packaging now depends on `fastmcp>=2.0.0` and publishes the `codex-mcp-async` CLI; README documents usage and cursor semantics.
 
 Open items / next steps:
-- Install dependencies and run live smoke tests to verify `codex_async.start` / `events` / `reply` end-to-end against a real Codex session.
-- Backfill automated coverage for the job registry and event cursor logic.
-- Decide on retention/cleanup strategy for completed jobs before productionising.
+- Reinstall in the pipx environment (`pipx install --force .`) and smoke-test `codex_async.start` / `events` / `reply` end-to-end against the real Codex server.
+- Backfill automated coverage, especially around job registry cursor behaviour and error paths.
+- Decide on retention/cleanup strategy for completed/failed jobs before production use.
+
+Instructions for the next agent:
+- Run `pipx install --force .` (or equivalent) to pick up the latest changes, then execute `codex-mcp-async` and confirm the FastMCP server starts cleanly.
+- Perform a manual end-to-end test: start a job, poll events using the returned cursor, and exercise `codex_async.reply` to ensure event buffering works across turns.
+- Capture observations or issues in this file and open follow-up tasks if failures appear; do not alter the job registry design until after testing results are collected.
 
 Current status: Ready for manual testing; no automated tests added yet.
