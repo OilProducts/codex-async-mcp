@@ -1,39 +1,18 @@
-Codex Async MCP progress (incomplete)
+codex-async-mcp handoff notes (updated September 30, 2025)
 
-Original request:
-- Wrap the serial `codex mcp serve` CLI so Codex jobs can run asynchronously and multiple requests can be in flight, instead of blocking on the built-in stdio loop.
-- Stand up our own MCP server (preferably with FastMCP) that proxies calls to the upstream Codex server and surfaces an async interface tailored for agents.
-- Reuse the “unique job identifier” concept introduced during earlier experiments so downstream clients can correlate follow-up calls with the initial job; verify whether Codex events alone are sufficient or if additional metadata is required.
-- Ensure the design works smoothly with the default event stream Codex emits (session configuration, reasoning deltas, task completion) and supports polling semantics an external agent can rely on.
-- Feel free to consult the FastMCP documentation (https://gofastmcp.com/llms.txt and linked docs) to align with best practices while building the wrapper.
+Context:
+- codex-async-mcp wraps `codex mcp serve` with a detached Codex agent workflow (`job_start`, `job_events`, `job_reply`, `job_notifications`, `job_wait`).
+- CodexMCPClient fails pending futures when the subprocess exits and notification backlog is pruned via cursor acknowledgements.
+- Job registry and event tooling enforce cursor/limit pagination with default 1,024-character truncation for verbose payloads.
+- CLI entry point is `codex-async-mcp`; import path is `codex_async_mcp`.
 
-Session summary:
-- Reviewed the captured Codex session log to understand event shapes and confirm `requestId` correlation semantics.
-- Designed the async wrapper architecture (Codex client subprocess, job registry, FastMCP façade) and aligned terminology around a cursor for event polling.
-- Implemented the job registry (`codex_async_mcp/jobs.py`) to buffer events, track job status/result/error, and expose cursor-based retrieval.
-- Extended `CodexMCPClient` so follow-up prompts reuse the original event queue and so conversation IDs are picked up from `session_configured` events.
-- Added the FastMCP server (`codex_async_mcp/server.py`) with `job_start`, `job_events`, `job_reply`, `job_notifications`, and `job_wait`, plus background tasks that watch Codex futures and pump events into the registry. Event streaming is now cursor/limit driven with default string truncation to keep payloads compact.
-- Updated packaging (`pyproject.toml`) and docs (`README.md`) and introduced the `codex-async-mcp` console entry point.
-- Diagnosed and fixed a FastMCP lifespan wiring bug encountered after `pipx install .` (the lifespan hook must be passed as a callable, not a pre-instantiated context manager).
-- Committed the implementation along with the recorded MCP log and pushed to `main`.
+Open follow-ups:
+- Let the event pump exit once a job reaches a terminal status to prevent idle background tasks.
+- Cap or summarise per-job event storage so long Codex sessions cannot exhaust memory.
+- Revisit CodexMCPClient queue/backpressure strategy for extremely noisy event streams.
+- Decide on retention/cleanup policy for completed jobs.
 
-- Asynchronous FastMCP server proxies `codex mcp serve` via `CodexMCPClient` and exposes async tools for start/poll/reply.
-- Job registry buffers MCP `codex/event` notifications and surfaces cursor-based polling semantics with limit/type filtering and truncation safeguards.
-- `CodexJobManager` ensures asynchronous jobs can be tracked from client code with
-  tokenised prompts, follow-up support, and buffered event/result access.
-- Blocking wait tool allows agents to yield turns until completion notifications
-  arrive without resorting to manual polling.
-- Client fixes ensure conversation IDs resolve reliably and that follow-up prompts share the event queue.
-- Packaging now depends on `fastmcp>=2.0.0` and publishes the `codex-async-mcp` CLI; README documents usage and cursor semantics.
-
-Open items / next steps:
-- Reinstall in the pipx environment (`pipx install --force .`) and smoke-test `job_start` / `job_events` / `job_reply` / `job_notifications` / `job_wait` end-to-end against the real Codex server, verifying the cursor+limit behaviour and truncation are agent-friendly.
-- Backfill automated coverage, especially around job registry cursor behaviour and error paths.
-- Decide on retention/cleanup strategy for completed/failed jobs before production use.
-
-Instructions for the next agent:
-- Run `pipx install --force .` (or equivalent) to pick up the latest changes, then execute `codex-async-mcp` and confirm the FastMCP server starts cleanly.
-- Perform a manual end-to-end test: start a job, poll events using the returned cursor, and exercise `job_reply` to ensure event buffering works across turns; confirm notifications arrive via the MCP channel and through `job_notifications`/`job_wait`.
-- Capture observations or issues in this file and open follow-up tasks if failures appear; do not alter the job registry design until after testing results are collected.
-
-Current status: Ready for manual testing; no automated tests added yet.
+Suggested next steps:
+- `pipx install --force .`, launch `codex-async-mcp`, and smoke-test the job_* flow end-to-end (start → wait → notifications → events → reply).
+- Confirm notifications arrive promptly with cursor reuse and verify job cancellation/termination behaviour.
+- Record new observations or issues here before handing off again.
