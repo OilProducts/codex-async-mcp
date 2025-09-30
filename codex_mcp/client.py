@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+from asyncio import QueueEmpty, QueueFull
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import count
@@ -145,6 +146,8 @@ class CodexMCPClient:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+
+        await self._abort_outstanding("Codex MCP client closed")
 
         self._proc = None
         self._reader_task = None
@@ -342,6 +345,7 @@ class CodexMCPClient:
 
             await self._dispatch(payload)
 
+        await self._abort_outstanding("Codex MCP server closed its stdout")
         self._shutdown.set()
 
     async def _stderr_logger(self) -> None:
@@ -428,9 +432,9 @@ class CodexMCPClient:
                     waiter.session_id.set_exception(
                         RuntimeError("session_configured event missing session_id")
                     )
-            if event_type == "task_complete":
-                # Remove once the task finishes to avoid leaking queues.
-                self._detached_waiters.pop(key, None)
+                if event_type == "task_complete":
+                    # Remove once the task finishes to avoid leaking queues.
+                    self._detached_waiters.pop(key, None)
 
     def _on_request_done(self, request_key: str, future: asyncio.Future[Any]) -> None:
         waiter = self._detached_waiters.pop(request_key, None)
@@ -445,6 +449,40 @@ class CodexMCPClient:
                     waiter.session_id.set_exception(
                         RuntimeError("Codex session completed without a session_configured event")
                     )
+
+    async def _abort_outstanding(self, reason: str) -> None:
+        """Fail any pending requests and queues with *reason*."""
+
+        abort_error = RuntimeError(reason)
+
+        for request_id, future in list(self._pending.items()):
+            if not future.done():
+                future.set_exception(abort_error)
+            self._pending.pop(request_id, None)
+
+        for key, waiter in list(self._detached_waiters.items()):
+            if not waiter.result.done():
+                waiter.result.set_exception(abort_error)
+            if not waiter.session_id.done():
+                waiter.session_id.set_exception(abort_error)
+            self._drain_queue_with_abort(waiter.queue, reason)
+            self._detached_waiters.pop(key, None)
+
+    def _drain_queue_with_abort(
+        self, queue: asyncio.Queue[dict[str, Any]], reason: str
+    ) -> None:
+        sentinel = {"msg": {"type": "job_aborted", "reason": reason}}
+
+        while True:
+            try:
+                queue.put_nowait(sentinel)
+            except QueueFull:
+                try:
+                    queue.get_nowait()
+                except QueueEmpty:
+                    break
+            else:
+                break
 
     # ------------------------------------------------------------------
     # Await helpers
