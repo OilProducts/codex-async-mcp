@@ -243,7 +243,7 @@ mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
 
 @mcp.tool(
     name="job_start",
-    description="Launch a detached Codex job for long-running or parallel work; returns job_id and initial cursor",
+    description="Launch a detached Codex agent that keeps working after your turn; returns job_id and initial cursor",
 )
 async def start(
     prompt: Annotated[str, Field(description="Natural language directive for the Codex job")],
@@ -320,7 +320,7 @@ async def fetch_events(
 
 @mcp.tool(
     name="job_reply",
-    description="Send follow-up prompts for a running job and keep its event stream moving forward",
+    description="Send follow-up prompts to the detached Codex agent created by job_start and advance its stream cursor",
 )
 async def reply(
     job_id: Annotated[str, Field(description="Existing job identifier to continue")],
@@ -361,7 +361,7 @@ async def fetch_notifications(
 
 @mcp.tool(
     name="job_wait",
-    description="Long-poll for completion notices; first call omit cursor or set it to 0 and reuse the returned cursor thereafter",
+    description="Long-poll for detached Codex agent completion notices; first call omit cursor or set it to 0, then reuse the returned cursor",
 )
 async def wait_notifications(
     cursor: Annotated[int | None, Field(description="Notification index already processed; omit or use 0 initially")] = None,

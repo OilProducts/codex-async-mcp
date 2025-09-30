@@ -35,13 +35,13 @@ asyncio.run(main())
 Run the asynchronous wrapper as an MCP server with `codex-async-mcp` (exposes
 stdio by default). The server provides five tools:
 
-- `job_start` launches a Codex job and returns `{job_id, cursor, status}`;
+- `job_start` launches a detached Codex agent and returns `{job_id, cursor, status}`;
   carry the cursor into later streaming calls.
 - `job_events` accepts `job_id` and `cursor`, returning the next batch
   of `codex/event` payloads beyond that cursor. Provide `limit`,
   `event_types`, or `truncate` arguments to cap batch size and trim verbose
   fields by default.
-- `job_reply` sends a follow-up prompt in the same Codex session and
+- `job_reply` sends a follow-up prompt to the detached Codex agent and
   resets the job status to `running` for the next turn.
 - `job_notifications` returns job completion notifications after the
   cursor you supply so agents can resume only when work has finished.
