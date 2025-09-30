@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "codex-mcp-wrapper"
+name = "codex-async-mcp"
 version = "0.1.0"
 description = "Async MCP client wrapper around `codex mcp serve`"
 authors = [{ name = "Codex User" }]
@@ -22,8 +22,8 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]
-codex-mcp-async = "codex_mcp.server:main"
+codex-async-mcp = "codex_async_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["codex_mcp*"]
+include = ["codex_async_mcp*"]

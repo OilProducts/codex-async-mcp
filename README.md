@@ -1,11 +1,11 @@
-# Codex MCP Wrapper
+# Codex Async MCP
 
 Async Python utilities to manage `codex mcp serve`, launch detached Codex agents,
 and supervise their MCP event streams.
 
 ```python
 import asyncio
-from codex_mcp import CodexMCPClient
+from codex_async_mcp import CodexMCPClient
 
 async def main():
     client = CodexMCPClient()
@@ -32,7 +32,7 @@ asyncio.run(main())
 
 ## FastMCP server
 
-Run the asynchronous wrapper as an MCP server with `codex-mcp-async` (exposes
+Run the asynchronous wrapper as an MCP server with `codex-async-mcp` (exposes
 stdio by default). The server provides five tools:
 
 - `codex_async_start` launches a Codex job and returns `{job_id, cursor, status}`;
