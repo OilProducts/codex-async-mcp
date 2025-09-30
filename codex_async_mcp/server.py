@@ -243,7 +243,7 @@ mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
 
 @mcp.tool(
     name="job_start",
-    description="Launch a detached Codex job; use returned job_id and cursor for follow-ups",
+    description="Launch a detached Codex job for long-running or parallel work; returns job_id and initial cursor",
 )
 async def start(
     prompt: Annotated[str, Field(description="Natural language directive for the Codex job")],
@@ -287,7 +287,7 @@ async def start(
 
 @mcp.tool(
     name="job_events",
-    description="Return events after the provided cursor (pass the last cursor to avoid repeats)",
+    description="Fetch Codex events after a cursor; pass back the returned cursor to page without repeats",
 )
 async def fetch_events(
     job_id: Annotated[str, Field(description="Target job identifier returned by job_start")],
@@ -320,7 +320,7 @@ async def fetch_events(
 
 @mcp.tool(
     name="job_reply",
-    description="Send a follow-up prompt for job_id; cursor in reply response advances the stream",
+    description="Send follow-up prompts for a running job and keep its event stream moving forward",
 )
 async def reply(
     job_id: Annotated[str, Field(description="Existing job identifier to continue")],
@@ -349,7 +349,7 @@ async def reply(
 
 @mcp.tool(
     name="job_notifications",
-    description="Fetch completion notices after the cursor; supply the returned cursor next call",
+    description="Read job completion notifications after a cursor so you can poll without duplication",
 )
 async def fetch_notifications(
     cursor: Annotated[int | None, Field(description="Notification index already processed; omit or use 0 initially")] = None,
@@ -361,7 +361,7 @@ async def fetch_notifications(
 
 @mcp.tool(
     name="job_wait",
-    description="Block until notifications beyond cursor arrive; first call omit cursor or set it to 0",
+    description="Long-poll for completion notices; first call omit cursor or set it to 0 and reuse the returned cursor thereafter",
 )
 async def wait_notifications(
     cursor: Annotated[int | None, Field(description="Notification index already processed; omit or use 0 initially")] = None,
