@@ -121,7 +121,7 @@ async def _publish_job_update(job_id: str) -> None:
 
     cursor = await notifications.publish(payload)
     payload_with_cursor = dict(payload, cursor=cursor)
-    await _broadcast_notification("codex_async/job_update", payload_with_cursor)
+    await _broadcast_notification("job_update", payload_with_cursor)
 
 
 def _truncate_value(value: Any, limit: int) -> Any:
@@ -242,7 +242,7 @@ mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
 
 
 @mcp.tool(
-    name="codex_async_start",
+    name="job_start",
     description="Launch a detached Codex job; use returned job_id and cursor for follow-ups",
 )
 async def start(
@@ -286,11 +286,11 @@ async def start(
 
 
 @mcp.tool(
-    name="codex_async_events",
+    name="job_events",
     description="Return events after the provided cursor (pass the last cursor to avoid repeats)",
 )
 async def fetch_events(
-    job_id: Annotated[str, Field(description="Target job identifier returned by codex_async_start")],
+    job_id: Annotated[str, Field(description="Target job identifier returned by job_start")],
     cursor: Annotated[int | None, Field(description="Number of events already consumed; use 0 or omit for first call")] = None,
     limit: Annotated[int | None, Field(gt=0, description="Maximum events to return in this page")] = 20,
     event_types: Annotated[list[str] | None, Field(description="Optional whitelist of Codex event types to include")] = None,
@@ -319,7 +319,7 @@ async def fetch_events(
 
 
 @mcp.tool(
-    name="codex_async_reply",
+    name="job_reply",
     description="Send a follow-up prompt for job_id; cursor in reply response advances the stream",
 )
 async def reply(
@@ -348,7 +348,7 @@ async def reply(
 
 
 @mcp.tool(
-    name="codex_async_notifications",
+    name="job_notifications",
     description="Fetch completion notices after the cursor; supply the returned cursor next call",
 )
 async def fetch_notifications(
@@ -360,7 +360,7 @@ async def fetch_notifications(
 
 
 @mcp.tool(
-    name="codex_async_wait",
+    name="job_wait",
     description="Block until notifications beyond cursor arrive; first call omit cursor or set it to 0",
 )
 async def wait_notifications(
