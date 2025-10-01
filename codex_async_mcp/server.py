@@ -246,18 +246,68 @@ mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
     description="Launch a detached Codex agent that keeps working after your turn; returns job_id and initial cursor",
 )
 async def start(
-    prompt: Annotated[str, Field(description="Natural language directive for the Codex job")],
-    model: Annotated[str | None, Field(description="Optional Codex model override")] = None,
-    profile: Annotated[str | None, Field(description="Codex profile name to apply")] = None,
-    cwd: Annotated[str | None, Field(description="Working directory path for the Codex subprocess")] = None,
-    approval_policy: Annotated[str | None, Field(description="Codex approval policy (e.g. untrusted)")] = None,
-    sandbox: Annotated[str | None, Field(description="Codex sandbox setting (read-only/workspace-write/etc.)")] = None,
-    config: Annotated[Mapping[str, Any] | None, Field(description="Additional Codex CLI config overrides")] = None,
-    base_instructions: Annotated[str | None, Field(description="Extra system instructions merged into the Codex session")] = None,
-    include_plan_tool: Annotated[bool | None, Field(description="Whether Codex should enable its planning tool")] = None,
-    extra_arguments: Annotated[Mapping[str, Any] | None, Field(description="Provider-specific Codex arguments")] = None,
+    prompt: Annotated[
+        str,
+        Field(
+            description="Initial user prompt that seeds the Codex conversation (required).",
+        ),
+    ],
+    model: Annotated[
+        str,
+        Field(
+            description="Override for the Codex model name (for example `o3`, `o4-mini`); default = None to use the server configuration.",
+        ),
+    ] = None,
+    profile: Annotated[
+        str,
+        Field(
+            description="Configuration profile defined in Codex `config.toml`; default = None defers to the server profile.",
+        ),
+    ] = None,
+    cwd: Annotated[
+        str,
+        Field(
+            description="Working directory for the session; relative paths resolve against the server cwd; default = None keeps the server default.",
+        ),
+    ] = None,
+    approval_policy: Annotated[
+        str,
+        Field(
+            description="Approval policy for shell commands (`untrusted`, `on-failure`, `never`); default = None keeps the Codex default.",
+        ),
+    ] = None,
+    sandbox: Annotated[
+        str,
+        Field(
+            description="Sandbox mode (`read-only`, `workspace-write`, or `danger-full-access`); default = None keeps the server default.",
+        ),
+    ] = None,
+    config: Annotated[
+        Mapping[str, Any],
+        Field(
+            description="Overrides for individual Codex config settings (mirrors the Codex Config struct); default = None sends no overrides.",
+        ),
+    ] = None,
+    base_instructions: Annotated[
+        str,
+        Field(
+            description="Custom system instructions that replace the default set; default = None keeps the built-in instructions.",
+        ),
+    ] = None,
+    include_plan_tool: Annotated[
+        bool,
+        Field(
+            description="Whether to include the Codex plan tool in the conversation; default = True matches the Codex server default.",
+        ),
+    ] = True,
+    extra_arguments: Annotated[
+        Mapping[str, Any],
+        Field(
+            description="Provider-specific arguments forwarded unchanged to the Codex backend; default = None omits extra parameters.",
+        ),
+    ] = None,
 ) -> dict[str, Any]:
-    """Launch a detached Codex session and return its initial state."""
+    """Proxy the Codex `codex` tool to launch a detached conversation and return its initial state."""
     client = _require_client()
     session = await client.start_detached_codex(
         prompt,
@@ -291,10 +341,10 @@ async def start(
 )
 async def fetch_events(
     job_id: Annotated[str, Field(description="Target job identifier returned by job_start")],
-    cursor: Annotated[int | None, Field(description="Number of events already consumed; use 0 or omit for first call")] = None,
-    limit: Annotated[int | None, Field(gt=0, description="Maximum events to return in this page")] = 20,
-    event_types: Annotated[list[str] | None, Field(description="Optional whitelist of Codex event types to include")] = None,
-    truncate: Annotated[int | None, Field(gt=0, description="Maximum characters per string field before truncation")] = _EVENT_TRUNCATION,
+    cursor: Annotated[int, Field(description="Number of events already consumed; use 0 or omit for first call, default = None")] = None,
+    limit: Annotated[int, Field(gt=0, description="Maximum events to return in this page, default = 20")] = 20,
+    event_types: Annotated[list[str], Field(description="Optional whitelist of Codex event types to include, default = None")] = None,
+    truncate: Annotated[int, Field(gt=0, description="Maximum characters per string field before truncation, default = _EVENT_TRUNCATION")] = _EVENT_TRUNCATION,
 ) -> dict[str, Any]:
     """Return Codex events after *cursor*, honoring optional limits and filters."""
     if limit is not None and limit <= 0:
@@ -323,10 +373,20 @@ async def fetch_events(
     description="Send follow-up prompts to the detached Codex agent created by job_start and advance its stream cursor",
 )
 async def reply(
-    job_id: Annotated[str, Field(description="Existing job identifier to continue")],
-    prompt: Annotated[str, Field(description="Follow-up message to send to the Codex session")],
+    job_id: Annotated[
+        str,
+        Field(
+            description="Existing Codex conversation identifier returned by `job_start`; required to continue the session.",
+        ),
+    ],
+    prompt: Annotated[
+        str,
+        Field(
+            description="Next user prompt to extend the Codex conversation (required).",
+        ),
+    ],
 ) -> dict[str, Any]:
-    """Send a follow-up prompt to an existing job and refresh its snapshot."""
+    """Proxy the Codex `codex-reply` tool by sending a follow-up prompt and refreshing the detached job snapshot."""
     client = _require_client()
     state = await registry.get_state(job_id)
     if state is None:
@@ -352,7 +412,7 @@ async def reply(
     description="Read job completion notifications after a cursor so you can poll without duplication",
 )
 async def fetch_notifications(
-    cursor: Annotated[int | None, Field(description="Notification index already processed; omit or use 0 initially")] = None,
+    cursor: Annotated[int, Field(description="Notification index already processed; omit or use 0 initially, default = None")] = None,
 ) -> dict[str, Any]:
     """Fetch completion notifications that occur after *cursor*."""
     items, next_cursor = await notifications.fetch(cursor)
@@ -364,7 +424,7 @@ async def fetch_notifications(
     description="Long-poll for detached Codex agent completion notices; first call omit cursor or set it to 0, then reuse the returned cursor",
 )
 async def wait_notifications(
-    cursor: Annotated[int | None, Field(description="Notification index already processed; omit or use 0 initially")] = None,
+    cursor: Annotated[int, Field(description="Notification index already processed; omit or use 0 initially, default = None")] = None,
 ) -> dict[str, Any]:
     """Block until a notification beyond *cursor* arrives, then return it."""
     items, next_cursor = await notifications.wait(cursor)
