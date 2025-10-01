@@ -1,0 +1,23 @@
+# IDE and editor metadata
+.idea/
+.vscode/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Testing and tooling artifacts
+pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+
+# OS artifacts
+.DS_Store
+Thumbs.db
