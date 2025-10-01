@@ -226,7 +226,7 @@ class CodexMCPClient:
 
         request_id, result_future, message = self._prepare_request("tools/call", params)
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=128)
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         session_future: asyncio.Future[str] = self._loop.create_future()
         waiter = _DetachedWaiter(queue=queue, session_id=session_future, result=result_future)
         self._detached_waiters[str(request_id)] = waiter
