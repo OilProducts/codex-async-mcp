@@ -270,7 +270,8 @@ mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
         "pursue an autonomous plan while you periodically check progress with the job-specific "
         "event stream (`job_events`) and the process-wide notification feed (`job_notifications` or "
         "`job_wait`), steering it via `job_reply`; the return includes the job_id and initial cursor "
-        "into that job's private event log."
+        "into that job's private event log. Stick with the default arguments unless you have a "
+        "compelling reason to override them."
     ),
 )
 async def start(
@@ -283,55 +284,55 @@ async def start(
     model: Annotated[
         str,
         Field(
-            description="Override for the Codex model name (for example `o3`, `o4-mini`); default = None to use the server configuration.",
+            description="Override for the Codex model name (for example `o3`, `o4-mini`); default = None to use the server configuration. Prefer leaving this unset unless you explicitly need a different model.",
         ),
     ] = None,
     profile: Annotated[
         str,
         Field(
-            description="Configuration profile defined in Codex `config.toml`; default = None defers to the server profile.",
+            description="Configuration profile defined in Codex `config.toml`; default = None defers to the server profile. Override only if you know which profile is required.",
         ),
     ] = None,
     cwd: Annotated[
         str,
         Field(
-            description="Working directory for the session; relative paths resolve against the server cwd; default = None keeps the server default.",
+            description="Working directory for the session; relative paths resolve against the server cwd; default = None keeps the server default. Set this only when a different project root is essential.",
         ),
     ] = None,
     approval_policy: Annotated[
         str,
         Field(
-            description="Approval policy for shell commands (`untrusted`, `on-failure`, `never`); default = None keeps the Codex default.",
+            description="Approval policy for shell commands (`untrusted`, `on-failure`, `never`); default = None keeps the Codex default. Change it only if the task demands alternative escalation behavior.",
         ),
     ] = None,
     sandbox: Annotated[
         str,
         Field(
-            description="Sandbox mode (`read-only`, `workspace-write`, or `danger-full-access`); default = None keeps the server default.",
+            description="Sandbox mode (`read-only`, `workspace-write`, or `danger-full-access`); default = None keeps the server default. Override sparingly when you must alter filesystem access.",
         ),
     ] = None,
     config: Annotated[
         Mapping[str, Any],
         Field(
-            description="Overrides for individual Codex config settings (mirrors the Codex Config struct); default = None sends no overrides.",
+            description="Overrides for individual Codex config settings (mirrors the Codex Config struct); default = None sends no overrides. Use only if you must tweak server-level settings.",
         ),
     ] = None,
     base_instructions: Annotated[
         str,
         Field(
-            description="Custom system instructions that replace the default set; default = None keeps the built-in instructions.",
+            description="Custom system instructions that replace the default set; default = None keeps the built-in instructions. Only supply this when you truly need custom framing.",
         ),
     ] = None,
     include_plan_tool: Annotated[
         bool,
         Field(
-            description="Whether to include the Codex plan tool in the conversation; default = True matches the Codex server default.",
+            description="Whether to include the Codex plan tool in the conversation; default = True matches the Codex server default. Flip this only if the plan tool causes issues.",
         ),
     ] = True,
     extra_arguments: Annotated[
         Mapping[str, Any],
         Field(
-            description="Provider-specific arguments forwarded unchanged to the Codex backend; default = None omits extra parameters.",
+            description="Provider-specific arguments forwarded unchanged to the Codex backend; default = None omits extra parameters. Leave unset unless the backend needs special flags.",
         ),
     ] = None,
 ) -> dict[str, Any]:
