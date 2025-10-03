@@ -47,7 +47,7 @@ class JSONRPCResponse:
 class DetachedSession:
     """Represents a Codex tool invocation running asynchronously."""
 
-    conversation_id: str
+    conversation_id: str | None
     request_id: int
     result: asyncio.Future[Any]
     events: asyncio.Queue[dict[str, Any]]
@@ -67,6 +67,26 @@ class _DetachedWaiter:
     queue: asyncio.Queue[dict[str, Any]]
     session_id: asyncio.Future[str]
     result: asyncio.Future[Any]
+
+
+def _estimate_payload_size(payload: Any) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False))
+    except TypeError:
+        return 0
+
+
+def _summarise_meta(meta: Mapping[str, Any] | None) -> tuple[str, str | None]:
+    if not meta:
+        return "<unknown>", None
+    method = meta.get("method", "<unknown>")
+    tool_name: str | None = None
+    params = meta.get("params")
+    if isinstance(params, Mapping):
+        candidate = params.get("name") or params.get("tool")
+        if isinstance(candidate, str):
+            tool_name = candidate
+    return str(method), tool_name
 
 
 class CodexMCPClient:
@@ -95,6 +115,7 @@ class CodexMCPClient:
         self._write_lock = asyncio.Lock()
         self._shutdown = asyncio.Event()
         self._detached_waiters: Dict[str, _DetachedWaiter] = {}
+        self._pending_meta: Dict[str, Mapping[str, Any]] = {}
         self.server_info: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
@@ -196,6 +217,7 @@ class CodexMCPClient:
         base_instructions: str | None = None,
         include_plan_tool: bool | None = None,
         extra_arguments: Mapping[str, Any] | None = None,
+        await_ready: bool = True,
     ) -> DetachedSession:
         """Launch a Codex MCP tool invocation without waiting for completion."""
 
@@ -234,13 +256,34 @@ class CodexMCPClient:
 
         await self._write(message)
 
-        conversation_id = await session_future
-        return DetachedSession(
-            conversation_id=conversation_id,
+        if await_ready:
+            conversation_id = await session_future
+            return DetachedSession(
+                conversation_id=conversation_id,
+                request_id=request_id,
+                result=result_future,
+                events=queue,
+            )
+
+        session = DetachedSession(
+            conversation_id=None,
             request_id=request_id,
             result=result_future,
             events=queue,
         )
+
+        def _bind_session_id(fut: asyncio.Future[str]) -> None:
+            try:
+                conversation_id = fut.result()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                _LOGGER.debug("Detached Codex session failed to configure: %s", exc)
+                if not session.result.done():
+                    session.result.set_exception(exc)
+            else:
+                session.conversation_id = conversation_id
+
+        session_future.add_done_callback(_bind_session_id)
+        return session
 
     async def continue_detached_codex(
         self,
@@ -248,6 +291,9 @@ class CodexMCPClient:
         prompt: str,
     ) -> asyncio.Future[Any]:
         """Send a follow-up ``codex-reply`` prompt for an existing conversation."""
+
+        if not session.conversation_id:
+            raise RuntimeError("Detached Codex session is not yet configured")
 
         args = {
             "name": "codex-reply",
@@ -293,6 +339,22 @@ class CodexMCPClient:
         }
         if params is not None:
             message["params"] = params
+
+        key = str(request_id)
+        metadata = {
+            "method": method,
+            "params": params,
+        }
+        self._pending_meta[key] = metadata
+        method_name, tool_name = _summarise_meta(metadata)
+        approx_bytes = _estimate_payload_size(params)
+        _LOGGER.info(
+            "MCP request id=%s method=%s tool=%s approx_bytes=%s",
+            key,
+            method_name,
+            tool_name or "<none>",
+            approx_bytes,
+        )
 
         return request_id, future, message
 
@@ -392,14 +454,36 @@ class CodexMCPClient:
             result=payload.get("result"),
             error=payload.get("error"),
         )
+        meta = self._pending_meta.pop(str(response.id), None)
         future = self._pending.pop(response.id, None)
+        if future is None and isinstance(response.id, str) and response.id.isdigit():
+            future = self._pending.pop(int(response.id), None)
         if future is None:
             _LOGGER.debug("No pending call for response id %r", response.id)
             return
 
         if response.error is not None:
+            method_name, tool_name = _summarise_meta(meta)
+            approx_bytes = _estimate_payload_size(response.error)
+            _LOGGER.warning(
+                "MCP response id=%s method=%s tool=%s error=%s approx_bytes=%s",
+                response.id,
+                method_name,
+                tool_name or "<none>",
+                response.error,
+                approx_bytes,
+            )
             future.set_exception(RuntimeError(response.error))
         else:
+            method_name, tool_name = _summarise_meta(meta)
+            approx_bytes = _estimate_payload_size(response.result)
+            _LOGGER.info(
+                "MCP response id=%s method=%s tool=%s approx_bytes=%s",
+                response.id,
+                method_name,
+                tool_name or "<none>",
+                approx_bytes,
+            )
             future.set_result(response.result)
 
     async def _handle_codex_event(self, params: JSONValue) -> None:
@@ -424,6 +508,17 @@ class CodexMCPClient:
         msg = params.get("msg")
         if isinstance(msg, dict):
             event_type = msg.get("type")
+            approx_bytes = _estimate_payload_size(msg)
+            meta = self._pending_meta.get(key)
+            method_name, tool_name = _summarise_meta(meta)
+            _LOGGER.info(
+                "MCP event request_id=%s method=%s tool=%s type=%s approx_bytes=%s",
+                key,
+                method_name,
+                tool_name or "<none>",
+                event_type,
+                approx_bytes,
+            )
             if event_type == "session_configured" and not waiter.session_id.done():
                 conversation_id = msg.get("session_id")
                 if isinstance(conversation_id, str) and conversation_id:
@@ -432,12 +527,13 @@ class CodexMCPClient:
                     waiter.session_id.set_exception(
                         RuntimeError("session_configured event missing session_id")
                     )
-                if event_type == "task_complete":
-                    # Remove once the task finishes to avoid leaking queues.
-                    self._detached_waiters.pop(key, None)
+            if event_type == "task_complete":
+                # Remove once the task finishes to avoid leaking queues.
+                self._detached_waiters.pop(key, None)
 
     def _on_request_done(self, request_key: str, future: asyncio.Future[Any]) -> None:
         waiter = self._detached_waiters.pop(request_key, None)
+        self._pending_meta.pop(request_key, None)
         if waiter and not waiter.session_id.done():
             if future.cancelled():
                 waiter.session_id.cancel()
@@ -459,6 +555,7 @@ class CodexMCPClient:
             if not future.done():
                 future.set_exception(abort_error)
             self._pending.pop(request_id, None)
+            self._pending_meta.pop(str(request_id), None)
 
         for key, waiter in list(self._detached_waiters.items()):
             if not waiter.result.done():
@@ -467,6 +564,7 @@ class CodexMCPClient:
                 waiter.session_id.set_exception(abort_error)
             self._drain_queue_with_abort(waiter.queue, reason)
             self._detached_waiters.pop(key, None)
+            self._pending_meta.pop(key, None)
 
     def _drain_queue_with_abort(
         self, queue: asyncio.Queue[dict[str, Any]], reason: str

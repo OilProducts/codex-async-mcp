@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Mapping, Annotated
 
 from fastmcp import FastMCP
@@ -14,8 +15,27 @@ from pydantic import Field
 from .client import CodexMCPClient
 from .jobs import JobRegistry, JobState
 
-
 _LOGGER = logging.getLogger(__name__)
+
+LOG_FILE_NAME = "codex_async_mcp.log"
+
+
+def _configure_logging() -> None:
+    log_path = Path.cwd() / LOG_FILE_NAME
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == log_path:
+            return
+
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
+    if root.level == logging.NOTSET:
+        root.setLevel(logging.INFO)
+
+
+_configure_logging()
 
 registry = JobRegistry()
 _client: CodexMCPClient | None = None
@@ -206,7 +226,8 @@ async def _watch_future(job_id: str, fut: asyncio.Future[Any]) -> None:
         await _publish_job_update(job_id)
 
 
-def _job_payload(state: JobState, cursor: int, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _job_payload(state: JobState, cursor: int, events: list[dict[str, Any]] | None = None) -> dict[
+    str, Any]:
     payload = {
         "job_id": state.job_id,
         "status": state.status.value,
@@ -243,7 +264,14 @@ mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
 
 @mcp.tool(
     name="job_start",
-    description="Launch a detached Codex agent that keeps working after your turn; returns job_id and initial cursor",
+    description=(
+        "Start a long-lived Codex session—i.e. a Codex CLI coding conversation—in detached mode "
+        "so the agent keeps working after your turn. Reach for this when you want the model to "
+        "pursue an autonomous plan while you periodically check progress with the job-specific "
+        "event stream (`job_events`) and the process-wide notification feed (`job_notifications` or "
+        "`job_wait`), steering it via `job_reply`; the return includes the job_id and initial cursor "
+        "into that job's private event log."
+    ),
 )
 async def start(
     prompt: Annotated[
@@ -320,6 +348,7 @@ async def start(
         base_instructions=base_instructions,
         include_plan_tool=include_plan_tool,
         extra_arguments=extra_arguments,
+        await_ready=False,
     )
 
     state = await registry.create_job(session)
@@ -337,14 +366,23 @@ async def start(
 
 @mcp.tool(
     name="job_events",
-    description="Fetch Codex events after a cursor; pass back the returned cursor to page without repeats",
+    description=(
+        "Collect buffered Codex streaming events for a detached job starting from the cursor you "
+        "already processed in that job's private event log. This feed is intentionally verbose and "
+        "noisy; prefer `job_wait` (or `job_notifications`) whenever you just need to know when the "
+        "job finishes, and reach for `job_events` only when you must inspect the granular stream."
+    ),
 )
 async def fetch_events(
     job_id: Annotated[str, Field(description="Target job identifier returned by job_start")],
-    cursor: Annotated[int, Field(description="Number of events already consumed; use 0 or omit for first call, default = None")] = None,
-    limit: Annotated[int, Field(gt=0, description="Maximum events to return in this page, default = 20")] = 20,
-    event_types: Annotated[list[str], Field(description="Optional whitelist of Codex event types to include, default = None")] = None,
-    truncate: Annotated[int, Field(gt=0, description="Maximum characters per string field before truncation, default = _EVENT_TRUNCATION")] = _EVENT_TRUNCATION,
+    cursor: Annotated[int, Field(
+        description="Number of events already consumed from this job_id's event list; use 0 or omit for the first call, default = None")] = None,
+    limit: Annotated[int, Field(gt=0,
+                                description="Maximum events to return in this page, default = 20")] = 20,
+    event_types: Annotated[list[str], Field(
+        description="Optional whitelist of Codex event types to include, default = None")] = None,
+    truncate: Annotated[int, Field(gt=0,
+                                   description="Maximum characters per string field before truncation, default = _EVENT_TRUNCATION")] = _EVENT_TRUNCATION,
 ) -> dict[str, Any]:
     """Return Codex events after *cursor*, honoring optional limits and filters."""
     if limit is not None and limit <= 0:
@@ -370,7 +408,11 @@ async def fetch_events(
 
 @mcp.tool(
     name="job_reply",
-    description="Send follow-up prompts to the detached Codex agent created by job_start and advance its stream cursor",
+    description=(
+        "Push an additional user prompt into an existing detached Codex job and advance the cursor "
+        "within that job's private event stream. Use this when the background agent needs more "
+        "guidance or clarification without restarting the session."
+    ),
 )
 async def reply(
     job_id: Annotated[
@@ -409,10 +451,17 @@ async def reply(
 
 @mcp.tool(
     name="job_notifications",
-    description="Read job completion notifications after a cursor so you can poll without duplication",
+    description=(
+        "Poll the process-wide notification feed for any completion or failure notices that "
+        "arrived after your last cursor. This is a non-blocking peek and may return nothing; when "
+        "you actually want to wait for work to finish, prefer `job_wait` so you are resumed only "
+        "once a notification exists."
+    ),
 )
 async def fetch_notifications(
-    cursor: Annotated[int, Field(description="Notification index already processed; omit or use 0 initially, default = None")] = None,
+    cursor: Annotated[int, Field(
+        description="Notification index already processed from the shared notification queue; omit or use 0 initially, default = None."
+    )] = None,
 ) -> dict[str, Any]:
     """Fetch completion notifications that occur after *cursor*."""
     items, next_cursor = await notifications.fetch(cursor)
@@ -421,10 +470,16 @@ async def fetch_notifications(
 
 @mcp.tool(
     name="job_wait",
-    description="Long-poll for detached Codex agent completion notices; first call omit cursor or set it to 0, then reuse the returned cursor",
+    description=(
+        "Block on the shared notification queue until any detached job reports completion or "
+        "failure beyond the supplied cursor. Reach for this when you want to go idle and be woken "
+        "up; it prevents you from filling the context window by repeatedly polling with "
+        "`job_events` or `job_notifications`."
+    ),
 )
 async def wait_notifications(
-    cursor: Annotated[int, Field(description="Notification index already processed; omit or use 0 initially, default = None")] = None,
+    cursor: Annotated[int, Field(
+        description="Notification index already processed from the shared notification queue; omit or use 0 initially, default = None")] = None,
 ) -> dict[str, Any]:
     """Block until a notification beyond *cursor* arrives, then return it."""
     items, next_cursor = await notifications.wait(cursor)
@@ -439,6 +494,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 __all__ = ["mcp", "registry", "main"]
