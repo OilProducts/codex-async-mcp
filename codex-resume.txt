@@ -1,7 +1,7 @@
 codex-async-mcp handoff notes (updated September 30, 2025)
 
 Context:
-- codex-async-mcp wraps `codex mcp serve` with a detached Codex agent workflow (`job_start`, `job_events`, `job_reply`, `job_notifications`, `job_wait`).
+- codex-async-mcp wraps `codex mcp-server` with a detached Codex agent workflow (`job_start`, `job_events`, `job_reply`, `job_notifications`, `job_wait`).
 - CodexMCPClient fails pending futures when the subprocess exits and notification backlog is pruned via cursor acknowledgements.
 - Job registry and event tooling enforce cursor/limit pagination with default 1,024-character truncation for verbose payloads.
 - CLI entry point is `codex-async-mcp`; import path is `codex_async_mcp`.

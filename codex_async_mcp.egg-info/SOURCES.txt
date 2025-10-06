@@ -12,4 +12,5 @@ codex_async_mcp.egg-info/entry_points.txt
 codex_async_mcp.egg-info/requires.txt
 codex_async_mcp.egg-info/top_level.txt
 tests/test_cli.py
+tests/test_client_reader.py
 tests/test_jobs.py
