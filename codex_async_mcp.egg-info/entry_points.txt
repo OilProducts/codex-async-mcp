@@ -1,0 +1,2 @@
+[console_scripts]
+codex-async-mcp = codex_async_mcp.server:main
