@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Sequence
 
-from .server import mcp
+from .server import enable_debug_logging, mcp
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,12 +24,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Mount path when using the SSE transport.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Write detailed logs to codex_async_mcp.log in the current working directory.",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.debug:
+        enable_debug_logging()
     if args.transport == "sse":
         mcp.run(transport="sse", mount_path=args.mount_path)
     else:

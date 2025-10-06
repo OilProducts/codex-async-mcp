@@ -11,6 +11,7 @@ def test_build_parser_defaults():
     args = parser.parse_args([])
     assert args.transport == "stdio"
     assert args.mount_path is None
+    assert args.debug is False
 
 
 def test_build_parser_custom_transport():
@@ -18,3 +19,9 @@ def test_build_parser_custom_transport():
     args = parser.parse_args(["--transport", "sse", "--mount-path", "/codex"])
     assert args.transport == "sse"
     assert args.mount_path == "/codex"
+
+
+def test_build_parser_debug_flag():
+    parser = build_parser()
+    args = parser.parse_args(["--debug"])
+    assert args.debug is True

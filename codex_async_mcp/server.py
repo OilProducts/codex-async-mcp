@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -18,24 +19,36 @@ from .jobs import JobRegistry, JobState
 _LOGGER = logging.getLogger(__name__)
 
 LOG_FILE_NAME = "codex_async_mcp.log"
+_LOGGING_ENABLED = False
+_client_ready: asyncio.Event | None = None
+_client_start_task: asyncio.Task[None] | None = None
+_client_start_error: BaseException | None = None
 
 
-def _configure_logging() -> None:
+def enable_debug_logging() -> None:
+    """Persist debug logs to ``codex_async_mcp.log`` in the current working directory."""
+
+    global _LOGGING_ENABLED
+    if _LOGGING_ENABLED:
+        return
+
     log_path = Path.cwd() / LOG_FILE_NAME
     root = logging.getLogger()
+
     for handler in root.handlers:
         if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == log_path:
-            return
+            _LOGGING_ENABLED = True
+            break
+    else:
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
 
-    handler = logging.FileHandler(log_path, encoding="utf-8")
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    handler.setFormatter(formatter)
-    root.addHandler(handler)
-    if root.level == logging.NOTSET:
-        root.setLevel(logging.INFO)
+    if root.level == logging.NOTSET or root.level > logging.DEBUG:
+        root.setLevel(logging.DEBUG)
 
-
-_configure_logging()
+    _LOGGING_ENABLED = True
 
 registry = JobRegistry()
 _client: CodexMCPClient | None = None
@@ -189,6 +202,21 @@ def _require_client() -> CodexMCPClient:
     return _client
 
 
+async def _require_ready_client() -> CodexMCPClient:
+    client = _require_client()
+    if _client_ready is None:
+        raise RuntimeError("Codex MCP client startup state unavailable")
+
+    await _client_ready.wait()
+
+    if _client_start_error is not None:
+        raise RuntimeError(
+            "Codex MCP backend failed to start; run with --debug for details."
+        ) from _client_start_error
+
+    return client
+
+
 def _ensure_event_pump(state: JobState) -> None:
     if state.event_task is not None and not state.event_task.done():
         return
@@ -243,10 +271,26 @@ def _job_payload(state: JobState, cursor: int, events: list[dict[str, Any]] | No
 
 @asynccontextmanager
 async def _lifespan(_app: FastMCP):
-    global _client
+    global _client, _client_ready, _client_start_task, _client_start_error
+
     client = CodexMCPClient()
-    await client.start()
     _client = client
+
+    loop = asyncio.get_running_loop()
+    _client_ready = asyncio.Event()
+    _client_start_error = None
+
+    async def _startup() -> None:
+        nonlocal client
+        try:
+            await client.start()
+        except Exception as exc:  # pragma: no cover - handled via diagnostics
+            _LOGGER.exception("Failed to start Codex MCP backend: %s", exc)
+            _client_start_error = exc
+        finally:
+            _client_ready.set()
+
+    _client_start_task = loop.create_task(_startup(), name="codex-mcp-backend-startup")
     try:
         yield
     finally:
@@ -255,8 +299,20 @@ async def _lifespan(_app: FastMCP):
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        if _client_start_task is not None and not _client_start_task.done():
+            _client_start_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _client_start_task
+
+        if _client_ready is not None and not _client_ready.is_set():
+            _client_ready.set()
+
         await client.close()
         _client = None
+        _client_start_task = None
+        _client_ready = None
+        _client_start_error = None
 
 
 mcp = FastMCP(name="Codex Async Wrapper", lifespan=_lifespan)
@@ -337,7 +393,7 @@ async def start(
     ] = None,
 ) -> dict[str, Any]:
     """Proxy the Codex `codex` tool to launch a detached conversation and return its initial state."""
-    client = _require_client()
+    client = await _require_ready_client()
     session = await client.start_detached_codex(
         prompt,
         model=model,
@@ -430,7 +486,7 @@ async def reply(
     ],
 ) -> dict[str, Any]:
     """Proxy the Codex `codex-reply` tool by sending a follow-up prompt and refreshing the detached job snapshot."""
-    client = _require_client()
+    client = await _require_ready_client()
     state = await registry.get_state(job_id)
     if state is None:
         raise ValueError(f"unknown job_id {job_id}")
@@ -496,4 +552,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-__all__ = ["mcp", "registry", "main"]
+__all__ = ["mcp", "registry", "main", "enable_debug_logging"]
