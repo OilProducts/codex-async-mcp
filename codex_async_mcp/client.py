@@ -1,4 +1,4 @@
-"""Async MCP client wrapper around ``codex mcp serve``.
+"""Async MCP client wrapper around ``codex mcp-server``.
 
 This module provides :class:`CodexMCPClient`, a small asyncio-based helper that
 launches the Codex MCP server over stdio, performs the handshake described in
@@ -28,6 +28,8 @@ _LOGGER = logging.getLogger(__name__)
 JSONValue = Any
 NotificationHandler = Callable[[JSONValue], Awaitable[None] | None]
 DEFAULT_PROTOCOL_VERSION = os.environ.get("MCP_SCHEMA_VERSION", "2025-06-18")
+_STDOUT_READ_CHUNK = 4096
+_MAX_STDOUT_FRAME = 8 * 1024 * 1024  # 8 MiB safety valve for oversized MCP frames
 
 
 @dataclass(slots=True)
@@ -90,7 +92,7 @@ def _summarise_meta(meta: Mapping[str, Any] | None) -> tuple[str, str | None]:
 
 
 class CodexMCPClient:
-    """Manage a ``codex mcp serve`` subprocess and speak MCP over stdio."""
+    """Manage a ``codex mcp-server`` subprocess and speak MCP over stdio."""
 
     def __init__(
         self,
@@ -101,7 +103,7 @@ class CodexMCPClient:
         protocol_version: str = DEFAULT_PROTOCOL_VERSION,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
-        self._command: tuple[str, ...] = tuple(command or ("codex", "mcp", "serve"))
+        self._command: tuple[str, ...] = tuple(command or ("codex", "mcp-server"))
         self._env = dict(env or {})
         self._cwd = cwd
         self._protocol_version = protocol_version
@@ -387,25 +389,88 @@ class CodexMCPClient:
 
     async def _stdout_reader(self) -> None:
         assert self._proc and self._proc.stdout
-        while not self._proc.stdout.at_eof():
+        reader = self._proc.stdout
+        buffer = bytearray()
+        content_length: int | None = None
+
+        async def _dispatch_json(raw: bytes) -> None:
+            chunk = raw.strip()
+            if not chunk:
+                return
             try:
-                line = await self._proc.stdout.readline()
+                payload = json.loads(chunk.decode("utf-8"))
+            except json.JSONDecodeError:
+                _LOGGER.warning("Discarding invalid JSON from MCP server: %r", raw)
+                return
+            await self._dispatch(payload)
+
+        def _pop_line() -> bytes | None:
+            newline_index = buffer.find(b"\n")
+            if newline_index == -1:
+                return None
+            raw_line = bytes(buffer[:newline_index])
+            del buffer[: newline_index + 1]
+            return raw_line.rstrip(b"\r")
+
+        while not reader.at_eof():
+            try:
+                chunk = await reader.read(_STDOUT_READ_CHUNK)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - defensive
                 _LOGGER.error("Error reading MCP stdout: %s", exc)
                 break
 
-            if not line:
+            if not chunk:
                 break
 
-            try:
-                payload = json.loads(line.decode("utf-8").strip())
-            except json.JSONDecodeError:
-                _LOGGER.warning("Discarding invalid JSON from MCP server: %r", line)
-                continue
+            buffer.extend(chunk)
+            if len(buffer) > _MAX_STDOUT_FRAME:
+                _LOGGER.error(
+                    "MCP stdout frame exceeded %s bytes; aborting reader", _MAX_STDOUT_FRAME
+                )
+                break
 
-            await self._dispatch(payload)
+            while True:
+                if content_length is None:
+                    line = _pop_line()
+                    if line is None:
+                        break
+                    if not line:
+                        # empty line separates headers from body
+                        continue
+                    if line.lower().startswith(b"content-length:"):
+                        try:
+                            content_length = int(line.split(b":", 1)[1].strip())
+                        except (ValueError, IndexError):
+                            _LOGGER.warning("Invalid Content-Length header from MCP server: %r", line)
+                            content_length = None
+                        continue
+                    if line.lower().startswith(b"content-type:"):
+                        # Ignore optional Content-Type header
+                        continue
+                    # Fallback to line-delimited JSON payloads
+                    await _dispatch_json(line)
+                    continue
+
+                if len(buffer) < (content_length or 0):
+                    break
+                raw_payload = bytes(buffer[:content_length])
+                del buffer[:content_length]
+                await _dispatch_json(raw_payload)
+                content_length = None
+                # Consume trailing newline if present
+                if buffer[:1] == b"\n":
+                    del buffer[:1]
+                elif buffer[:2] == b"\r\n":
+                    del buffer[:2]
+
+        # Process residual data (e.g. final JSON without newline)
+        if buffer and len(buffer) <= _MAX_STDOUT_FRAME:
+            if content_length is None:
+                await _dispatch_json(bytes(buffer))
+            elif len(buffer) >= content_length:
+                await _dispatch_json(bytes(buffer[:content_length]))
 
         await self._abort_outstanding("Codex MCP server closed its stdout")
         self._shutdown.set()
