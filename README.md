@@ -62,10 +62,13 @@ Use the returned `job_id` and `cursor` across subsequent calls.
 
 ### `job_events`
 Fetch buffered streaming events for a specific job.
-- **Inputs:** `job_id`, optional `cursor` (defaults to 0), `limit` (default 20), `event_types`, `truncate` (default 1024 characters).
+- **Inputs:** `job_id`, optional `cursor` (defaults to 0), `limit` (default 20), `event_types`, `raw_events` (default `false`), `truncate` (default 1024 characters).
 - **Returns:** Event batch plus an updated cursor and snapshot metadata (`status`, `result`, `error`).
 
 Events are truncated to keep payloads small. Pass `truncate=0` to disable trimming.
+By default only assistant responses are returned. Set `raw_events=true` if you need the full firehose
+of status updates and token streams, but beware that most agents handle the filtered view far more
+reliably.
 
 ### `job_reply`
 Post an additional prompt to an existing Codex job.

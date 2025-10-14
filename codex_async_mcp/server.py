@@ -61,61 +61,44 @@ class NotificationHub:
 
     def __init__(self) -> None:
         self._items: list[dict[str, Any]] = []
-        self._offset: int = 0
         self._cond = asyncio.Condition()
 
     async def publish(self, payload: dict[str, Any]) -> int:
         async with self._cond:
             self._items.append(payload)
             self._cond.notify_all()
-            return self._offset + len(self._items)
+            return len(self._items)
 
     async def fetch(self, cursor: int | None = None) -> tuple[list[dict[str, Any]], int]:
         async with self._cond:
-            end = self._offset + len(self._items)
-            absolute_cursor = self._normalize_cursor(cursor, end)
-            idx = absolute_cursor - self._offset
-            slice_items = self._items[idx:]
-            next_cursor = self._offset + len(self._items)
-            self._prune(absolute_cursor)
+            start = self._normalize_cursor(cursor)
+            slice_items = self._items[start:]
+            next_cursor = len(self._items)
             return list(slice_items), next_cursor
 
     async def wait(self, cursor: int | None = None) -> tuple[list[dict[str, Any]], int]:
         async with self._cond:
             while True:
-                end = self._offset + len(self._items)
-                absolute_cursor = self._normalize_cursor(cursor, end)
-                if end > absolute_cursor:
+                start = self._normalize_cursor(cursor)
+                if len(self._items) > start:
                     break
                 await self._cond.wait()
-                cursor = absolute_cursor
-            idx = absolute_cursor - self._offset
-            slice_items = self._items[idx:]
-            next_cursor = self._offset + len(self._items)
-            self._prune(absolute_cursor)
+            slice_items = self._items[start:]
+            next_cursor = len(self._items)
             return list(slice_items), next_cursor
 
-    def _normalize_cursor(self, cursor: int | None, upper_bound: int) -> int:
+    def _normalize_cursor(self, cursor: int | None) -> int:
         if cursor is None:
-            return self._offset
+            return 0
         try:
             value = int(cursor)
         except (TypeError, ValueError):
-            return self._offset
-        if value < self._offset:
-            return self._offset
-        if value > upper_bound:
-            return upper_bound
+            return 0
+        if value < 0:
+            return 0
+        if value > len(self._items):
+            return len(self._items)
         return value
-
-    def _prune(self, cutoff: int) -> None:
-        if cutoff <= self._offset:
-            return
-        drop = min(cutoff - self._offset, len(self._items))
-        if drop <= 0:
-            return
-        del self._items[:drop]
-        self._offset += drop
 
 
 notifications = NotificationHub()
@@ -142,10 +125,24 @@ async def _publish_job_update(job_id: str) -> None:
     if snapshot is None:
         return
 
+    result_payload = snapshot.result
+    if isinstance(result_payload, dict):
+        result_payload = dict(result_payload)
+        if result_payload.get("status") == "timeout":
+            event_cursor = snapshot.next_cursor
+            cursor_hint = f"next job_events cursor: {event_cursor}"
+            message = result_payload.get("message")
+            if message:
+                if cursor_hint not in message:
+                    result_payload["message"] = f"{message} ({cursor_hint})"
+            else:
+                result_payload["message"] = cursor_hint
+            result_payload.setdefault("next_event_cursor", event_cursor)
+
     payload: dict[str, Any] = {
         "job_id": snapshot.job_id,
         "status": snapshot.status.value,
-        "result": snapshot.result,
+        "result": result_payload,
         "error": snapshot.error,
         "conversation_id": snapshot.session_id,
         "published_at": time.time(),
@@ -337,40 +334,10 @@ async def start(
             description="Initial user prompt that seeds the Codex conversation (required).",
         ),
     ],
-    model: Annotated[
-        str,
-        Field(
-            description="Override for the Codex model name (for example `o3`, `o4-mini`); default = None to use the server configuration. Prefer leaving this unset unless you explicitly need a different model.",
-        ),
-    ] = None,
-    profile: Annotated[
-        str,
-        Field(
-            description="Configuration profile defined in Codex `config.toml`; default = None defers to the server profile. Override only if you know which profile is required.",
-        ),
-    ] = None,
     cwd: Annotated[
         str,
         Field(
             description="Working directory for the session; relative paths resolve against the server cwd; default = None keeps the server default. Set this only when a different project root is essential.",
-        ),
-    ] = None,
-    approval_policy: Annotated[
-        str,
-        Field(
-            description="Approval policy for shell commands (`untrusted`, `on-failure`, `never`); default = None keeps the Codex default. Change it only if the task demands alternative escalation behavior.",
-        ),
-    ] = None,
-    sandbox: Annotated[
-        str,
-        Field(
-            description="Sandbox mode (`read-only`, `workspace-write`, or `danger-full-access`); default = None keeps the server default. Override sparingly when you must alter filesystem access.",
-        ),
-    ] = None,
-    config: Annotated[
-        Mapping[str, Any],
-        Field(
-            description="Overrides for individual Codex config settings (mirrors the Codex Config struct); default = None sends no overrides. Use only if you must tweak server-level settings.",
         ),
     ] = None,
     base_instructions: Annotated[
@@ -379,32 +346,13 @@ async def start(
             description="Custom system instructions that replace the default set; default = None keeps the built-in instructions. Only supply this when you truly need custom framing.",
         ),
     ] = None,
-    include_plan_tool: Annotated[
-        bool,
-        Field(
-            description="Whether to include the Codex plan tool in the conversation; default = True matches the Codex server default. Flip this only if the plan tool causes issues.",
-        ),
-    ] = True,
-    extra_arguments: Annotated[
-        Mapping[str, Any],
-        Field(
-            description="Provider-specific arguments forwarded unchanged to the Codex backend; default = None omits extra parameters. Leave unset unless the backend needs special flags.",
-        ),
-    ] = None,
 ) -> dict[str, Any]:
     """Proxy the Codex `codex` tool to launch a detached conversation and return its initial state."""
     client = await _require_ready_client()
     session = await client.start_detached_codex(
         prompt,
-        model=model,
-        profile=profile,
         cwd=cwd,
-        approval_policy=approval_policy,
-        sandbox=sandbox,
-        config=config,
         base_instructions=base_instructions,
-        include_plan_tool=include_plan_tool,
-        extra_arguments=extra_arguments,
         await_ready=False,
     )
 
@@ -438,6 +386,9 @@ async def fetch_events(
                                 description="Maximum events to return in this page, default = 20")] = 20,
     event_types: Annotated[list[str], Field(
         description="Optional whitelist of Codex event types to include, default = None")] = None,
+    raw_events: Annotated[bool, Field(
+        description="If true, return every Codex event (status updates, tokens, etc.). Defaults to False so only assistant responses are returned."
+    )] = False,
     truncate: Annotated[int, Field(gt=0,
                                    description="Maximum characters per string field before truncation, default = _EVENT_TRUNCATION")] = _EVENT_TRUNCATION,
 ) -> dict[str, Any]:
@@ -449,6 +400,7 @@ async def fetch_events(
         cursor,
         limit=limit,
         event_types=event_types,
+        include_all_events=raw_events,
     )
     truncated = _summarise_events(events, truncate)
     snapshot = await registry.get_snapshot(job_id)
@@ -458,6 +410,12 @@ async def fetch_events(
     payload["returned"] = len(truncated)
     payload["requested_limit"] = limit
     payload["filter_types"] = event_types
+    payload["raw_events"] = raw_events
+    if raw_events:
+        payload["warning"] = (
+            "raw_events=True returns the full Codex stream (status updates, token dumps, etc.). "
+            "Prefer the default filtered view unless you need to debug."
+        )
     if truncate is not None and truncate > 0:
         payload["truncate"] = truncate
     return payload
