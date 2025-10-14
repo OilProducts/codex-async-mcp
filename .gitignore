@@ -21,3 +21,16 @@ coverage.xml
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+codex_async_mcp.log
+
+# Local notes / transcripts not for VCS
+codex-resume.txt
+MCP server output.txt
