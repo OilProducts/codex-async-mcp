@@ -22,7 +22,7 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]
-codex-async-mcp = "codex_async_mcp.server:main"
+codex-async-mcp = "codex_async_mcp.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
