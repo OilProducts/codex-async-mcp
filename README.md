@@ -1,8 +1,8 @@
+THIS PROJECT HAS BEEN SUPERCEDED BY FIRST PARTY SUPPORT FOR SUBAGENTS.  IT IS NO LONGER MAINTAINED.
+
 # Codex Async MCP
 
 Codex Async MCP wraps the `codex mcp-server` CLI so you can run Codex coding agents as long-lived background jobs through the Model Context Protocol (MCP). It launches the Codex server over stdio, relays streaming events, and exposes them via FastMCP so any MCP-compatible client can supervise and steer Codex remotely.
-
-THIS PROJECT HAS BEEN SUPERCEDED BY FIRST PARTY SUPPORT FOR SUBAGENTS.  IT IS NO LONGER MAINTAINED.
 
 ## Highlights
 - Start Codex conversations in detached mode and keep them alive after your turn completes.
